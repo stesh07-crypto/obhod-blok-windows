@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -27,8 +26,8 @@ for rel in ["frontend/src/modals/Settings.tsx", "frontend/src/modals/Settings.cs
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
 
-# Extend the persistent settings model. settingsStore already merges saved data with DEFAULT_SETTINGS,
-# so existing users migrate automatically without losing prior preferences.
+# Extend the persistent settings model. New fields are optional so old tests/configs remain compatible;
+# settingsStore merges them with DEFAULT_SETTINGS at runtime.
 types = read("frontend/src/lib/types.ts")
 old_iface = """export interface AppSettings {
   autoStart: boolean;
@@ -38,17 +37,17 @@ old_iface = """export interface AppSettings {
 """
 new_iface = """export interface AppSettings {
   autoStart: boolean;
-  trayEnabled: boolean;
-  autoConnect: boolean;
-  useGlobalHashes: boolean;
-  globalHashes: [string, string, string, string];
+  trayEnabled?: boolean;
+  autoConnect?: boolean;
+  useGlobalHashes?: boolean;
+  globalHashes?: [string, string, string, string];
   obfsMode: 'audio' | 'video';
   obfsAccepted: boolean;
 }
 """
 if old_iface in types:
     types = types.replace(old_iface, new_iface, 1)
-elif "trayEnabled: boolean;" not in types:
+elif "trayEnabled?: boolean;" not in types:
     raise RuntimeError("AppSettings marker not found")
 
 old_defaults = """export const DEFAULT_SETTINGS: AppSettings = {
