@@ -1,0 +1,486 @@
+name: Bootstrap OBhoD Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import PWDTT upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/PWDTT
+          git clone --depth 1 https://github.com/luminescq/PWDTT.git /tmp/PWDTT
+
+          # Keep this repository's .git and bootstrap workflow while importing the app.
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          rsync -a --exclude '.git' --exclude '.github' /tmp/PWDTT/ ./
+
+      - name: Apply OBhoD branding and subscription import
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          # Brand visible text, but keep the lowercase Go module/package paths for compatibility.
+          for p in Path('.').rglob('*'):
+              if not p.is_file() or '.git' in p.parts:
+                  continue
+              if p.suffix.lower() not in {'.go', '.ts', '.tsx', '.css', '.json', '.md', '.html', '.yml', '.yaml'}:
+                  continue
+              try:
+                  s = p.read_text(encoding='utf-8')
+              except Exception:
+                  continue
+              if 'PWDTT' in s:
+                  p.write_text(s.replace('PWDTT', 'OBhoD'), encoding='utf-8')
+
+          wails = Path('wails.json')
+          data = json.loads(wails.read_text(encoding='utf-8'))
+          data['name'] = 'OBhoD'
+          data['outputfilename'] = 'OBhoD'
+          data.setdefault('author', {})['name'] = 'OBhoD'
+          wails.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          # Add the source subscription URL to the frontend model. It is persisted by serverStore/localStorage.
+          types = Path('frontend/src/lib/types.ts')
+          s = types.read_text(encoding='utf-8')
+          needle = "  power?: number;\n"
+          if 'subscriptionUrl?: string;' not in s:
+              s = s.replace(needle, needle + "  subscriptionUrl?: string;\n")
+          types.write_text(s, encoding='utf-8')
+
+          # Add Wails binding method to backend.App.
+          app = Path('backend/app.go')
+          s = app.read_text(encoding='utf-8')
+          marker = "func (a *App) ListProfiles() map[string]ProfileData {\n\treturn a.store.ListProfiles()\n}\n"
+          addition = marker + "\n// ImportSubscription downloads one OBhoD Bronya profile from a copied HTTPS subscription URL.\nfunc (a *App) ImportSubscription(rawURL string) (*SubscriptionImportResult, error) {\n\treturn FetchSubscription(rawURL)\n}\n"
+          if 'func (a *App) ImportSubscription(' not in s:
+              if marker not in s:
+                  raise SystemExit('backend/app.go marker not found')
+              s = s.replace(marker, addition)
+          app.write_text(s, encoding='utf-8')
+
+          # Update same subscription instead of creating duplicates.
+          connect = Path('frontend/src/pages/Connect.tsx')
+          s = connect.read_text(encoding='utf-8')
+          old = """  const handleAdd = (data: Omit<Server, 'id'>) => {\n    const s = serverStore.add(data);\n    setServers(serverStore.getAll());\n    setSelected(s);\n  };\n"""
+          new = """  const handleAdd = (data: Omit<Server, 'id'>) => {\n    const existing = data.subscriptionUrl\n      ? serverStore.getAll().find(s => s.subscriptionUrl === data.subscriptionUrl)\n      : undefined;\n    if (existing) {\n      const updated: Server = { ...existing, ...data };\n      serverStore.update(updated);\n      setServers(serverStore.getAll());\n      setSelected(updated);\n      toastStore.show('Подписка Брони обновлена', 2500);\n      return;\n    }\n    const added = serverStore.add(data);\n    setServers(serverStore.getAll());\n    setSelected(added);\n  };\n"""
+          if old not in s:
+              raise SystemExit('Connect.tsx handleAdd marker not found')
+          s = s.replace(old, new)
+          connect.write_text(s, encoding='utf-8')
+          PY
+
+          cat > backend/subscription.go <<'GO'
+          package backend
+
+          import (
+              "encoding/base64"
+              "encoding/json"
+              "fmt"
+              "io"
+              "net"
+              "net/http"
+              "net/url"
+              "strconv"
+              "strings"
+              "time"
+          )
+
+          // SubscriptionImportResult is the one Bronya profile the Windows client needs.
+          type SubscriptionImportResult struct {
+              Name            string   `json:"name"`
+              Peer            string   `json:"peer"`
+              Password        string   `json:"password"`
+              Hashes          []string `json:"hashes"`
+              Workers         int      `json:"workers"`
+              ListenPort      int      `json:"listenPort"`
+              Description     string   `json:"description"`
+              SubscriptionURL string   `json:"subscriptionUrl"`
+          }
+
+          type subscriptionEnvelope struct {
+              SubscriptionName string                `json:"subscriptionName"`
+              GroupName        string                `json:"groupName"`
+              Description      string                `json:"description"`
+              Profiles         []subscriptionProfile `json:"profiles"`
+              Servers          []subscriptionProfile `json:"servers"`
+          }
+
+          type subscriptionProfile struct {
+              Name           string          `json:"name"`
+              Peer           string          `json:"peer"`
+              Password       string          `json:"password"`
+              Pass           string          `json:"pass"`
+              Hashes         json.RawMessage `json:"hashes"`
+              VKHashes       json.RawMessage `json:"vkHashes"`
+              Workers        int             `json:"workers"`
+              WorkersPerHash int             `json:"workersPerHash"`
+              Port           int             `json:"port"`
+              ListenPort     int             `json:"listenPort"`
+          }
+
+          var subscriptionHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
+          func FetchSubscription(rawURL string) (*SubscriptionImportResult, error) {
+              rawURL = strings.TrimSpace(rawURL)
+              u, err := url.Parse(rawURL)
+              if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+                  return nil, fmt.Errorf("ссылка подписки должна начинаться с http:// или https://")
+              }
+
+              req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+              if err != nil {
+                  return nil, fmt.Errorf("не удалось создать запрос: %w", err)
+              }
+              req.Header.Set("Accept", "application/json, text/plain, */*")
+              req.Header.Set("User-Agent", "OBhoD-Windows-Subscription/1.0")
+
+              resp, err := subscriptionHTTPClient.Do(req)
+              if err != nil {
+                  return nil, fmt.Errorf("не удалось загрузить подписку: %w", err)
+              }
+              defer resp.Body.Close()
+              if resp.StatusCode < 200 || resp.StatusCode > 299 {
+                  return nil, fmt.Errorf("сервер подписки вернул HTTP %d", resp.StatusCode)
+              }
+
+              body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+              if err != nil {
+                  return nil, fmt.Errorf("не удалось прочитать подписку: %w", err)
+              }
+              text := strings.TrimSpace(string(body))
+              if text == "" {
+                  return nil, fmt.Errorf("пустая подписка")
+              }
+
+              // Keep compatibility with mobile OBhoD: payload may be JSON or Base64-wrapped JSON.
+              if !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "[") {
+                  for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+                      if decoded, decErr := enc.DecodeString(text); decErr == nil {
+                          candidate := strings.TrimSpace(string(decoded))
+                          if strings.HasPrefix(candidate, "{") || strings.HasPrefix(candidate, "[") {
+                              text = candidate
+                              break
+                          }
+                      }
+                  }
+              }
+
+              var env subscriptionEnvelope
+              if err := json.Unmarshal([]byte(text), &env); err != nil {
+                  return nil, fmt.Errorf("неверный формат подписки: %w", err)
+              }
+              profiles := env.Profiles
+              if len(profiles) == 0 {
+                  profiles = env.Servers
+              }
+              if len(profiles) == 0 {
+                  return nil, fmt.Errorf("в подписке нет профиля Брони")
+              }
+
+              p := profiles[0] // Bronya is intentionally one personal profile.
+              if strings.TrimSpace(p.Peer) == "" {
+                  return nil, fmt.Errorf("в профиле Брони отсутствует peer")
+              }
+              password := p.Password
+              if password == "" {
+                  password = p.Pass
+              }
+              if password == "" {
+                  return nil, fmt.Errorf("в профиле Брони отсутствует пароль")
+              }
+
+              hashes := parseSubscriptionHashes(p.Hashes)
+              if len(hashes) == 0 {
+                  hashes = parseSubscriptionHashes(p.VKHashes)
+              }
+              if len(hashes) == 0 {
+                  return nil, fmt.Errorf("в профиле Брони отсутствуют VK-хэши")
+              }
+              if len(hashes) > 4 {
+                  hashes = hashes[:4]
+              }
+
+              workers := p.Workers
+              if workers <= 0 {
+                  workers = p.WorkersPerHash
+              }
+              if workers <= 0 {
+                  workers = len(hashes) * 9
+              }
+
+              listenPort := p.Port
+              if listenPort <= 0 {
+                  listenPort = p.ListenPort
+              }
+              if listenPort <= 0 {
+                  listenPort = 9000
+              }
+
+              name := strings.TrimSpace(p.Name)
+              if name == "" {
+                  name = strings.TrimSpace(env.SubscriptionName)
+              }
+              if name == "" {
+                  name = strings.TrimSpace(env.GroupName)
+              }
+              if name == "" {
+                  name = "OBhoD_BLOK"
+              }
+
+              return &SubscriptionImportResult{
+                  Name:            name,
+                  Peer:            ensureDTLSPort(strings.TrimSpace(p.Peer), 56000),
+                  Password:        password,
+                  Hashes:          hashes,
+                  Workers:         workers,
+                  ListenPort:      listenPort,
+                  Description:     env.Description,
+                  SubscriptionURL: rawURL,
+              }, nil
+          }
+
+          func parseSubscriptionHashes(raw json.RawMessage) []string {
+              if len(raw) == 0 || string(raw) == "null" {
+                  return nil
+              }
+              var asString string
+              if json.Unmarshal(raw, &asString) == nil {
+                  return splitHashes(asString)
+              }
+              var asList []string
+              if json.Unmarshal(raw, &asList) == nil {
+                  out := make([]string, 0, len(asList))
+                  for _, h := range asList {
+                      h = strings.TrimSpace(h)
+                      if h != "" {
+                          out = append(out, h)
+                      }
+                  }
+                  return out
+              }
+              return nil
+          }
+
+          func splitHashes(v string) []string {
+              fields := strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' })
+              out := make([]string, 0, len(fields))
+              for _, h := range fields {
+                  h = strings.TrimSpace(h)
+                  if h != "" {
+                      out = append(out, h)
+                  }
+              }
+              return out
+          }
+
+          func ensureDTLSPort(peer string, defaultPort int) string {
+              if peer == "" {
+                  return peer
+              }
+              if host, port, err := net.SplitHostPort(peer); err == nil && host != "" && port != "" {
+                  return peer
+              }
+              if ip := net.ParseIP(peer); ip != nil && strings.Contains(peer, ":") {
+                  return net.JoinHostPort(peer, strconv.Itoa(defaultPort))
+              }
+              if strings.HasPrefix(peer, "[") && strings.HasSuffix(peer, "]") {
+                  return peer + ":" + strconv.Itoa(defaultPort)
+              }
+              // host:port with a numeric tail is already explicit.
+              if i := strings.LastIndex(peer, ":"); i > 0 {
+                  if _, err := strconv.Atoi(peer[i+1:]); err == nil {
+                      return peer
+                  }
+              }
+              return peer + ":" + strconv.Itoa(defaultPort)
+          }
+          GO
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('frontend/src/modals/Add-server.tsx')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace(
+              "import { SaveProfile } from '../../wailsjs/go/backend/App';",
+              "import { SaveProfile, ImportSubscription } from '../../wailsjs/go/backend/App';"
+          )
+          s = s.replace(
+              "  const [hashOpen, setHashOpen] = useState(false);\n",
+              "  const [hashOpen, setHashOpen] = useState(false);\n  const [subscriptionUrl, setSubscriptionUrl] = useState('');\n  const [importing, setImporting] = useState(false);\n  const [importError, setImportError] = useState('');\n"
+          )
+
+          pattern = re.compile(r"  const applyLink = \(raw: string\) => \{.*?\n  \};\n\n  const handleHashSave", re.S)
+          replacement = r'''  const applyLink = async (raw: string) => {
+            setLink(raw);
+            setImportError('');
+            const trimmed = raw.trim();
+
+            if (/^https?:\/\//i.test(trimmed)) {
+              if (trimmed.length < 25 || importing) return;
+              setImporting(true);
+              try {
+                const result = await ImportSubscription(trimmed);
+                setSubscriptionUrl(result.subscriptionUrl || trimmed);
+                setName(result.name || 'OBhoD_BLOK');
+                const peer = result.peer || '';
+                const lastColon = peer.lastIndexOf(':');
+                if (lastColon > 0 && lastColon < peer.length - 1 && /^\d+$/.test(peer.slice(lastColon + 1))) {
+                  setIp(peer.slice(0, lastColon));
+                  setPort(peer.slice(lastColon + 1));
+                } else {
+                  setIp(peer);
+                  setPort('56000');
+                }
+                setPassword(result.password || '');
+                const source = result.hashes || [];
+                const h4: [string,string,string,string] = [source[0]??'', source[1]??'', source[2]??'', source[3]??''];
+                setHashes(h4);
+                const filled = h4.filter(x => x.trim()).length;
+                setPower(result.workers > 0 ? result.workers : Math.max(9, filled * 9));
+              } catch (e) {
+                setSubscriptionUrl('');
+                setImportError(e instanceof Error ? e.message : String(e));
+              } finally {
+                setImporting(false);
+              }
+              return;
+            }
+
+            setSubscriptionUrl('');
+            const parsed = parseWdttUrl(trimmed);
+            if (!parsed) return;
+            const lastColon = parsed.host.lastIndexOf(':');
+            if (lastColon > 0 && lastColon < parsed.host.length - 1) {
+              setIp(parsed.host.slice(0, lastColon));
+              setPort(parsed.host.slice(lastColon + 1));
+            } else {
+              setIp(parsed.host);
+              setPort('56000');
+            }
+            setPassword(parsed.password);
+            if (parsed.name !== 'Server') setName(parsed.name);
+            if (parsed.hashes.length > 0) {
+              const h4: [string,string,string,string] = [parsed.hashes[0]??'', parsed.hashes[1]??'', parsed.hashes[2]??'', parsed.hashes[3]??''];
+              setHashes(h4);
+              const filled = h4.filter(x => x.trim()).length;
+              setPower(parsed.workers && parsed.workers > 0 ? parsed.workers : Math.max(9, filled * 9));
+            }
+          };
+
+          const handleHashSave'''
+          s, count = pattern.subn(replacement, s, count=1)
+          if count != 1:
+              raise SystemExit('Add-server applyLink block not found')
+
+          s = s.replace("        hashes: [],\n", "        hashes: hashes.filter(h => h.trim()),\n")
+          s = s.replace(
+              "    onAdd({ name: name.trim(), host, password, hashes, power });",
+              "    onAdd({ name: name.trim(), host, password, hashes, power, subscriptionUrl: subscriptionUrl || undefined });"
+          )
+          s = s.replace("<span className=\"as-title\">Добавление сервера</span>", "<span className=\"as-title\">Добавление профиля</span>")
+          s = s.replace('placeholder="Вставьте ссылку wdtt://..."', 'placeholder="Вставьте ссылку подписки https://..."')
+          s = s.replace('onChange={e => applyLink(e.target.value)}', 'onChange={e => { void applyLink(e.target.value); }}')
+          s = s.replace(
+              "          />\n\n          <div className=\"as-divider\">или вручную</div>",
+              "          />\n          {importing && <div style={{ fontSize: 12, margin: '-2px 0 10px', color: 'var(--text-4)' }}>Загрузка Брони...</div>}\n          {importError && <div style={{ fontSize: 12, margin: '-2px 0 10px', color: '#ef4444' }}>{importError}</div>}\n          {subscriptionUrl && !importing && <div style={{ fontSize: 12, margin: '-2px 0 10px', color: '#22c55e' }}>Броня загружена</div>}\n\n          <div className=\"as-divider\">или вручную</div>"
+          )
+          s = s.replace("disabled={!name.trim() || !ip.trim() || saving}", "disabled={!name.trim() || !ip.trim() || saving || importing}")
+          s = s.replace("{saving ? 'Сохранение...' : 'Добавить сервер'}", "{saving ? 'Сохранение...' : 'Добавить профиль'}")
+          p.write_text(s, encoding='utf-8')
+          PY
+
+          # Use the current OBhoD application icon from the iOS project.
+          curl -fsSL "https://raw.githubusercontent.com/stesh07-crypto/obhod-blok-ios/main/OBhoD/App/Assets.xcassets/AppIcon.appiconset/Icon-1024.png" -o assets/icons/icon.png
+          cp assets/icons/icon.png build/appicon.png
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          from PIL import Image
+          img = Image.open('assets/icons/icon.png').convert('RGBA')
+          img.save('build/windows/icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          PY
+
+          # Windows-only CI for this repository.
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cat > .github/workflows/build-windows.yml <<'YAML'
+          name: Build OBhoD Windows
+
+          on:
+            push:
+              branches: [main]
+            workflow_dispatch:
+
+          jobs:
+            build-windows:
+              runs-on: ubuntu-22.04
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-go@v5
+                  with:
+                    go-version: '1.26'
+                - uses: actions/setup-node@v4
+                  with:
+                    node-version: '22'
+                - name: Install build dependencies
+                  run: |
+                    sudo apt-get update
+                    sudo apt-get install -y libayatana-appindicator3-dev pkg-config gcc libgtk-3-dev webkit2gtk-4.1-dev
+                - name: Install Wails
+                  run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+                - name: Build Windows x64
+                  run: wails build -platform windows/amd64 -o OBhoD-Windows-x64.exe
+                - name: Upload Windows EXE
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: OBhoD-Windows-x64
+                    path: build/bin/OBhoD-Windows-x64.exe
+          YAML
+
+          cat > README.md <<'MD'
+          # OBhoD Windows
+
+          Windows-клиент OBhoD на базе PWDTT/Wails.
+
+          ## Броня
+
+          В окне добавления профиля можно вставить персональную HTTPS-ссылку OBhoD вида `https://test-36.ru/sub/...?...`.
+          Клиент загружает один профиль Брони, переносит `peer`, персональный пароль, VK-хэши и `workers`, а если в `peer` нет DTLS-порта — использует `56000`.
+
+          Повторная вставка той же персональной ссылки обновляет существующий профиль вместо создания дубля.
+
+          ## Сборка Windows
+
+          GitHub Actions собирает `OBhoD-Windows-x64.exe` и публикует его как artifact.
+
+          ## Upstream / License
+
+          Основано на PWDTT by luminescq. Производный код распространяется на условиях GNU GPL v3; исходный `LICENSE` сохранён.
+          MD
+
+      - name: Commit imported application
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Bootstrap OBhoD Windows from PWDTT" || exit 0
+          git push origin HEAD:main
