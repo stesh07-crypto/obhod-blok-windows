@@ -1,3 +1,3 @@
 # OBhoD Windows
 
-Windows client based on PWDTT. Work in progress.
+Windows client based on PWDTT. Bootstrap trigger.
