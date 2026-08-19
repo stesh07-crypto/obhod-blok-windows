@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: obhod-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-windows:
     runs-on: ubuntu-22.04
@@ -60,12 +64,9 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install Wails build dependencies
+      - name: Install Wails
         shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libayatana-appindicator3-dev pkg-config gcc libgtk-3-dev webkit2gtk-4.1-dev
-          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Build OBhoD Windows x64
         working-directory: upstream
