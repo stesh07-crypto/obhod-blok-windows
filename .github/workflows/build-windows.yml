@@ -3,6 +3,8 @@ name: Build OBhoD Windows
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -72,6 +74,7 @@ jobs:
           wails build -platform windows/amd64 -o OBhoD-Windows-x64.exe
 
       - name: Upload OBhoD Windows EXE
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: OBhoD-Windows-x64
@@ -79,12 +82,14 @@ jobs:
           if-no-files-found: error
 
       - name: Package patched source
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           rm -rf upstream/frontend/node_modules upstream/frontend/dist
           tar -czf OBhoD-Windows-source.tar.gz upstream
 
       - name: Upload patched source
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: OBhoD-Windows-source
