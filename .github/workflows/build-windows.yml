@@ -1,0 +1,91 @@
+name: Build OBhoD Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout OBhoD overlay
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned PWDTT core
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/luminescq/PWDTT.git upstream
+          cd upstream
+          git checkout 055dce9cf9ab34c29690641c8b8c6891d44c0722
+          rm -rf .git
+
+      - name: Apply OBhoD Windows changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply_obhod.py upstream overlay
+          grep -q 'Title:     "OBhoD"' upstream/main_windows.go
+          grep -q 'func (a \*App) ImportSubscription' upstream/backend/app.go
+          grep -q 'FetchSubscription' upstream/backend/subscription.go
+          grep -q 'Вставьте ссылку Брони' upstream/frontend/src/modals/Add-server.tsx
+
+      - name: Apply current OBhoD icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/stesh07-crypto/obhod-blok-ios/main/OBhoD/App/Assets.xcassets/AppIcon.appiconset/Icon-1024.png" -o upstream/assets/icons/icon.png
+          cp upstream/assets/icons/icon.png upstream/build/appicon.png
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          from PIL import Image
+          img = Image.open('upstream/assets/icons/icon.png').convert('RGBA')
+          img.save('upstream/build/windows/icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          PY
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Wails build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-dev pkg-config gcc libgtk-3-dev webkit2gtk-4.1-dev
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build OBhoD Windows x64
+        working-directory: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          wails build -platform windows/amd64 -o OBhoD-Windows-x64.exe
+
+      - name: Upload OBhoD Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: OBhoD-Windows-x64
+          path: upstream/build/bin/OBhoD-Windows-x64.exe
+          if-no-files-found: error
+
+      - name: Package patched source
+        shell: bash
+        run: |
+          rm -rf upstream/frontend/node_modules upstream/frontend/dist
+          tar -czf OBhoD-Windows-source.tar.gz upstream
+
+      - name: Upload patched source
+        uses: actions/upload-artifact@v4
+        with:
+          name: OBhoD-Windows-source
+          path: OBhoD-Windows-source.tar.gz
