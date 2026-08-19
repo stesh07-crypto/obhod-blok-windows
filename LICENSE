@@ -1,1 +1,5 @@
-TEMP
+OBhoD Windows modifications are distributed under the GNU General Public License, version 3 (GPL-3.0-only), because this project is based on PWDTT.
+
+The complete GPLv3 license text and the upstream copyright/license notices are preserved in the patched source produced by the build workflow from the pinned PWDTT upstream source.
+
+SPDX-License-Identifier: GPL-3.0-only
