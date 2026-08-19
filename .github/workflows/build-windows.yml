@@ -36,10 +36,14 @@ jobs:
           set -euo pipefail
           sed -i 's/pattern\.subn(replacement, s, count=1)/pattern.subn(lambda _m: replacement, s, count=1)/' scripts/apply_obhod.py
           python3 scripts/apply_obhod.py upstream overlay
+          python3 scripts/apply_full_settings.py upstream overlay
           grep -q 'Title:     "OBhoD"' upstream/main_windows.go
           grep -q 'func (a \*App) ImportSubscription' upstream/backend/app.go
           grep -q 'FetchSubscription' upstream/backend/subscription.go
           grep -q 'Вставьте ссылку Брони' upstream/frontend/src/modals/Add-server.tsx
+          grep -q 'Авто-подключение' upstream/frontend/src/modals/Settings.tsx
+          grep -q 'Поддержать проект / Оплата Брони' upstream/frontend/src/modals/Settings.tsx
+          grep -q 'configuredGlobalHashes' upstream/frontend/src/pages/Connect.tsx
 
       - name: Apply current OBhoD icon
         shell: bash
