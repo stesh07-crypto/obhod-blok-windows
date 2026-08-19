@@ -1,0 +1,56 @@
+.st-overlay { position: fixed; inset: 0; background: var(--overlay-bg); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 100; animation: overlay-in 0.3s ease-out; }
+.st-modal { background: var(--surface); border-radius: 14px; padding: 20px; width: 380px; max-width: 95vw; box-shadow: var(--shadow); animation: modal-in 0.3s ease-out; border: 1px solid var(--border); }
+.st-modal--full { width: 500px; max-height: 86vh; overflow-y: auto; }
+.st-header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; color: var(--text); }
+.st-title { font-size: 16px; font-weight: 600; flex: 1; color: var(--text); }
+.st-close { background: none; border: none; cursor: pointer; font-size: 18px; color: var(--text); line-height: 1; padding: 0; }
+.st-power-block { display: flex; align-items: flex-start; justify-content: space-between; padding: 2px 0 13px; border-bottom: 1px solid var(--border-2); }
+.st-power-title { font-size: 14px; font-weight: 650; color: var(--text); }
+.st-power-sub { margin-top: 4px; font-size: 12px; color: var(--text-3); }
+.st-power-value { margin-top: 1px; font-size: 12px; color: var(--text-2); font-weight: 600; }
+.st-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border-2); font-size: 14px; color: var(--text); }
+.st-row--advanced { padding-top: 10px; }
+.st-badge { display: inline-block; font-size: 9px; font-weight: 700; color: var(--accent); background: var(--accent-dim, rgba(139,92,246,0.15)); padding: 1px 5px; border-radius: 4px; margin-left: 6px; vertical-align: middle; letter-spacing: 0.3px; }
+.st-segment { display: flex; gap: 4px; background: var(--seg-bg); border-radius: 8px; padding: 3px; }
+.st-seg-btn { padding: 5px 12px; border: none; border-radius: 6px; background: transparent; color: var(--text-3); font-size: 12px; font-family: 'Geist', sans-serif; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+.st-seg-btn--active { background: var(--accent); color: var(--accent-fg); }
+.st-toggle { width: 48px; height: 26px; border-radius: 50px; border: none; cursor: pointer; position: relative; transition: background 0.2s, box-shadow 0.2s; flex-shrink: 0; }
+.st-toggle--on { background: var(--accent); box-shadow: 0 0 12px var(--accent-dim, rgba(139,92,246,0.3)); }
+.st-toggle--on:hover { box-shadow: 0 0 20px var(--accent-dim, rgba(139,92,246,0.5)); }
+.st-toggle--off { background: var(--seg-bg); }
+.st-toggle::after { content: ''; position: absolute; width: 18px; height: 18px; border-radius: 50%; top: 4px; transition: left 0.2s; }
+.st-toggle--on::after { background: var(--accent-fg); left: 26px; }
+.st-toggle--off::after { background: var(--text-3); left: 4px; }
+.st-hash-box, .st-advanced-head { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; margin-top: 12px; padding: 0 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); color: var(--text); font-size: 14px; font-weight: 650; font-family: 'Geist', sans-serif; cursor: pointer; }
+.st-hash-box:hover, .st-advanced-head:hover { border-color: var(--accent); background: var(--bg-2); }
+.st-hash-box .st-chevron { margin-left: auto; }
+.st-chevron { transition: transform 0.2s ease; }
+.st-chevron--open { transform: rotate(180deg); }
+.st-hash-editor { margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
+.st-hash-input { width: 100%; box-sizing: border-box; margin-bottom: 8px; padding: 10px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: monospace; font-size: 12px; outline: none; }
+.st-hash-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim, rgba(139,92,246,0.14)); }
+.st-hash-input:last-of-type { margin-bottom: 5px; }
+.st-hash-note { font-size: 11px; color: var(--text-3); line-height: 1.4; }
+.st-advanced-head { justify-content: space-between; margin-top: 12px; border-left-color: transparent; border-right-color: transparent; border-radius: 0; padding-left: 0; padding-right: 0; }
+.st-advanced-head:hover { border-color: var(--border); background: transparent; color: var(--accent); }
+.st-advanced-body { padding-top: 2px; }
+.st-info { text-align: center; padding: 16px 0 4px; margin-top: 8px; }
+.st-info-name { font-size: 16px; font-weight: 700; color: var(--text); }
+.st-info-ver { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+.st-actions { display: flex; gap: 8px; margin-top: 12px; }
+.st-action { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 9px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font-size: 12px; font-family: 'Geist', sans-serif; font-weight: 600; cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s; white-space: nowrap; }
+.st-action:hover { border-color: var(--accent); background: var(--bg-2); }
+.st-action--copied { border-color: #22c55e; color: #22c55e; }
+.st-donate { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; margin-top: 8px; padding: 10px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font-size: 13px; font-family: 'Geist', sans-serif; font-weight: 600; cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; }
+.st-donate:hover { border-color: #ff9f0a; box-shadow: 0 0 16px rgba(255,159,10,0.18); }
+.st-obfs-modal { width: 340px; text-align: center; padding: 24px 20px 20px; }
+.st-obfs-icon { color: #f59e0b; margin-bottom: 12px; }
+.st-obfs-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+.st-obfs-text { font-size: 13px; color: var(--text-2); line-height: 1.5; margin-bottom: 8px; }
+.st-obfs-disclaimer { font-size: 11px; color: var(--text-3); font-style: italic; margin-bottom: 16px; }
+.st-obfs-actions { display: flex; gap: 8px; }
+.st-obfs-btn { flex: 1; padding: 9px; border-radius: 8px; font-size: 13px; font-family: 'Geist', sans-serif; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+.st-obfs-btn--cancel { background: var(--seg-bg); color: var(--text-3); border: 1px solid var(--border); }
+.st-obfs-btn--cancel:hover { border-color: var(--text-3); }
+.st-obfs-btn--accept { background: var(--accent); color: var(--accent-fg); border: none; }
+.st-obfs-btn--accept:hover { opacity: 0.9; }
