@@ -30,6 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sed -i 's/pattern\.subn(replacement, s, count=1)/pattern.subn(lambda _m: replacement, s, count=1)/' scripts/apply_obhod.py
           python3 scripts/apply_obhod.py upstream overlay
           grep -q 'Title:     "OBhoD"' upstream/main_windows.go
           grep -q 'func (a \*App) ImportSubscription' upstream/backend/app.go
