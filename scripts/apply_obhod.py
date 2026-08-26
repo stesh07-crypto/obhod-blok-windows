@@ -38,6 +38,27 @@ wails["outputfilename"] = "OBhoD"
 wails.setdefault("author", {})["name"] = "OBhoD"
 wails_path.write_text(json.dumps(wails, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+
+# Windows must elevate before creating the WireGuard TUN interface.
+# Embedding requireAdministrator makes Windows show UAC automatically on launch.
+manifest_path = ROOT / "build" / "windows" / "wails.exe.manifest"
+manifest = manifest_path.read_text(encoding="utf-8")
+admin_level = '<requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>'
+if admin_level not in manifest:
+    closing_tag = "</assembly>"
+    if closing_tag not in manifest:
+        raise RuntimeError("Windows manifest closing tag not found")
+    trust_info = """    <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+        <security>
+            <requestedPrivileges>
+                <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+            </requestedPrivileges>
+        </security>
+    </trustInfo>
+"""
+    manifest = manifest.replace(closing_tag, trust_info + closing_tag, 1)
+manifest_path.write_text(manifest, encoding="utf-8")
+
 # Frontend contains only visible branding references; replace PWDTT there, not in backend update URLs.
 for p in (ROOT / "frontend").rglob("*"):
     if not p.is_file() or p.suffix.lower() not in {".ts", ".tsx", ".css", ".html", ".json"}:
