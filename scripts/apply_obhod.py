@@ -195,7 +195,7 @@ replacement = r'''  const applyLink = async (raw: string) => {
 
   const handleHashSave'''
 if "const applyLink = async" not in s:
-    s, n = pattern.subn(replacement, s, count=1)
+    s, n = pattern.subn(lambda _m: replacement, s, count=1)
     if n != 1:
         raise RuntimeError("applyLink marker not found in Add-server.tsx")
 

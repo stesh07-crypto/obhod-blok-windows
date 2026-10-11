@@ -55,7 +55,7 @@ export default function Settings({ onClose }: Props) {
     })));
     const mode = settings.obfsMode || 'audio';
     const accepted = settings.obfsAccepted ? 'да' : 'нет';
-    const full = report + `\n## Settings\n- Obfuscation: ${mode}\n- Obfs accepted: ${accepted}\n- Auto connect: ${settings.autoConnect ? 'yes' : 'no'}\n- Global hashes: ${settings.useGlobalHashes ? 'yes' : 'no'}\n`;
+    const full = report + `\n## Settings\n- Obfuscation: ${mode}\n- Obfs accepted: ${accepted}\n- TURN TCP: ${settings.turnTcp ? 'yes' : 'no'}\n- Auto connect: ${settings.autoConnect ? 'yes' : 'no'}\n- Global hashes: ${settings.useGlobalHashes ? 'yes' : 'no'}\n`;
     await navigator.clipboard.writeText(full);
     setCopiedReport(true);
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
@@ -169,6 +169,14 @@ export default function Settings({ onClose }: Props) {
                 <div className="st-segment">
                   <button type="button" className={`st-seg-btn${settings.obfsMode === 'audio' ? ' st-seg-btn--active' : ''}`} onClick={() => handleObfsClick('audio')}>Audio</button>
                   <button type="button" className={`st-seg-btn${settings.obfsMode === 'video' ? ' st-seg-btn--active' : ''}`} onClick={() => handleObfsClick('video')}>Video</button>
+                </div>
+              </div>
+
+              <div className="st-row st-row--advanced">
+                <span>Транспорт TURN</span>
+                <div className="st-segment">
+                  <button type="button" className={`st-seg-btn${!settings.turnTcp ? ' st-seg-btn--active' : ''}`} onClick={() => update('turnTcp', false)}>UDP</button>
+                  <button type="button" className={`st-seg-btn${settings.turnTcp ? ' st-seg-btn--active' : ''}`} onClick={() => update('turnTcp', true)}>TCP</button>
                 </div>
               </div>
 

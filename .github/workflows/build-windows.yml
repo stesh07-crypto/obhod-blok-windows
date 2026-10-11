@@ -27,14 +27,13 @@ jobs:
           set -euo pipefail
           git clone https://github.com/luminescq/PWDTT.git upstream
           cd upstream
-          git checkout 055dce9cf9ab34c29690641c8b8c6891d44c0722
+          git checkout v1.6.0
           rm -rf .git
 
       - name: Apply OBhoD Windows changes
         shell: bash
         run: |
           set -euo pipefail
-          sed -i 's/pattern\.subn(replacement, s, count=1)/pattern.subn(lambda _m: replacement, s, count=1)/' scripts/apply_obhod.py
           python3 scripts/apply_obhod.py upstream overlay
           python3 scripts/apply_full_settings.py upstream overlay
           grep -q 'Title:     "OBhoD"' upstream/main_windows.go
@@ -42,6 +41,7 @@ jobs:
           grep -q 'FetchSubscription' upstream/backend/subscription.go
           grep -q 'Вставьте ссылку Брони' upstream/frontend/src/modals/Add-server.tsx
           grep -q 'Авто-подключение' upstream/frontend/src/modals/Settings.tsx
+          grep -q 'Транспорт TURN' upstream/frontend/src/modals/Settings.tsx
           grep -q 'Поддержать проект / Оплата Брони' upstream/frontend/src/modals/Settings.tsx
           grep -q 'configuredGlobalHashes' upstream/frontend/src/pages/Connect.tsx
 

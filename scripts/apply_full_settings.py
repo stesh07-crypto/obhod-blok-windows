@@ -29,7 +29,14 @@ for rel in ["frontend/src/modals/Settings.tsx", "frontend/src/modals/Settings.cs
 # Extend the persistent settings model. New fields are optional so old tests/configs remain compatible;
 # settingsStore merges them with DEFAULT_SETTINGS at runtime.
 types = read("frontend/src/lib/types.ts")
-old_iface = """export interface AppSettings {
+old_iface_v160 = """export interface AppSettings {
+  autoStart: boolean;
+  obfsMode: 'audio' | 'video';
+  obfsAccepted: boolean;
+  turnTcp: boolean;
+}
+"""
+old_iface_legacy = """export interface AppSettings {
   autoStart: boolean;
   obfsMode: 'audio' | 'video';
   obfsAccepted: boolean;
@@ -43,14 +50,24 @@ new_iface = """export interface AppSettings {
   globalHashes?: [string, string, string, string];
   obfsMode: 'audio' | 'video';
   obfsAccepted: boolean;
+  turnTcp?: boolean;
 }
 """
-if old_iface in types:
-    types = types.replace(old_iface, new_iface, 1)
+if old_iface_v160 in types:
+    types = types.replace(old_iface_v160, new_iface, 1)
+elif old_iface_legacy in types:
+    types = types.replace(old_iface_legacy, new_iface, 1)
 elif "trayEnabled?: boolean;" not in types:
     raise RuntimeError("AppSettings marker not found")
 
-old_defaults = """export const DEFAULT_SETTINGS: AppSettings = {
+old_defaults_v160 = """export const DEFAULT_SETTINGS: AppSettings = {
+  autoStart: true,
+  obfsMode: 'audio',
+  obfsAccepted: false,
+  turnTcp: false,
+};
+"""
+old_defaults_legacy = """export const DEFAULT_SETTINGS: AppSettings = {
   autoStart: true,
   obfsMode: 'audio',
   obfsAccepted: false,
@@ -64,10 +81,13 @@ new_defaults = """export const DEFAULT_SETTINGS: AppSettings = {
   globalHashes: ['', '', '', ''],
   obfsMode: 'audio',
   obfsAccepted: false,
+  turnTcp: false,
 };
 """
-if old_defaults in types:
-    types = types.replace(old_defaults, new_defaults, 1)
+if old_defaults_v160 in types:
+    types = types.replace(old_defaults_v160, new_defaults, 1)
+elif old_defaults_legacy in types:
+    types = types.replace(old_defaults_legacy, new_defaults, 1)
 elif "globalHashes: ['', '', '', '']," not in types:
     raise RuntimeError("DEFAULT_SETTINGS marker not found")
 write("frontend/src/lib/types.ts", types)
