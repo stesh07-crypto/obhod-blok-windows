@@ -342,3 +342,15 @@ if "SessionErrorTransient" not in sess:
     sess = sess.replace(fatal_anchor, transient, 1)
     write("core/session.go", sess)
     print("Transient allocate failure classification applied")
+
+# 10. DTLS timeout is transient: retry instead of rotating obfuscation.
+sess = read("core/session.go")
+if "SessionErrorTransient" in sess and "DTLS timeout" in sess:
+    sess = re.sub(
+        r'Type:\s+SessionErrorWrapTimeout,(\s*\n\s*Address:[^\n]*\n\s*Err:\s+fmt\.Errorf\("DTLS timeout)',
+        r'Type:    SessionErrorTransient,\1',
+        sess,
+        count=1,
+    )
+    write("core/session.go", sess)
+    print("DTLS timeout classified as transient")
