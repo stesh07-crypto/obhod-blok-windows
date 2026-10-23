@@ -253,7 +253,7 @@ func defaultRouteMetricWindows(gw string) string {
 \tif err != nil {
 \t\treturn ""
 \t}
-\tfor _, line := range strings.Split(string(out), "\n") {
+\tfor _, line := range strings.Split(string(out), string([]byte{10})) {
 \t\tfields := strings.Fields(line)
 \t\tif len(fields) >= 5 && fields[0] == "0.0.0.0" && fields[1] == "0.0.0.0" && fields[2] == gw {
 \t\t\treturn fields[4]
