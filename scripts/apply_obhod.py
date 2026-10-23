@@ -235,3 +235,42 @@ elif "const existing = data.subscriptionUrl" not in connect:
 write("frontend/src/pages/Connect.tsx", connect)
 
 print("OBhoD Windows patch applied successfully")
+
+# 6. Windows: restore the original default-route metric instead of hardcoded 35.
+wg = read("backend/wg.go")
+if "physMetric" not in wg:
+    wg = wg.replace(
+        "\tphysGW              string // physical gateway saved during apply for restore on teardown",
+        "\tphysGW              string // physical gateway saved during apply for restore on teardown\n"
+        "\tphysMetric          string // original metric of the physical default route",
+        1,
+    )
+    metric_fn = '''
+func defaultRouteMetricWindows(gw string) string {
+\tcmd := exec.Command("cmd", "/c", "route print 0.0.0.0")
+\thideWindow(cmd)
+\tout, err := cmd.Output()
+\tif err != nil {
+\t\treturn ""
+\t}
+\tfor _, line := range strings.Split(string(out), "\n") {
+\t\tfields := strings.Fields(line)
+\t\tif len(fields) >= 5 && fields[0] == "0.0.0.0" && fields[1] == "0.0.0.0" && fields[2] == gw {
+\t\t\treturn fields[4]
+\t\t}
+\t}
+\treturn ""
+}
+'''
+    parse_marker = "func parseCIDR(cidr string) (ip, mask string, err error) {"
+    if parse_marker not in wg:
+        raise RuntimeError("parseCIDR marker not found in backend/wg.go")
+    wg = wg.replace(parse_marker, metric_fn + "\n" + parse_marker, 1)
+    wg = wg.replace("\t\tw.physGW = gw\n", "\t\tw.physGW = gw\n\t\tw.physMetric = defaultRouteMetricWindows(gw)\n", 1)
+    old_restore = '\tif w.physGW != "" {\n\t\t_ = runCmdWindows("route", "change", "0.0.0.0", "mask", "0.0.0.0", w.physGW, "metric", "35")\n\t\tw.physGW = ""'
+    new_restore = '\tif w.physGW != "" {\n\t\tmetric := w.physMetric\n\t\tif metric == "" {\n\t\t\tmetric = "35"\n\t\t}\n\t\t_ = runCmdWindows("route", "change", "0.0.0.0", "mask", "0.0.0.0", w.physGW, "metric", metric)\n\t\tw.physGW = ""\n\t\tw.physMetric = ""'
+    if old_restore not in wg:
+        raise RuntimeError("physGW restore marker not found in backend/wg.go")
+    wg = wg.replace(old_restore, new_restore, 1)
+    write("backend/wg.go", wg)
+    print("Windows metric restore patch applied")
