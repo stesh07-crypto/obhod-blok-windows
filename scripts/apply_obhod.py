@@ -321,3 +321,24 @@ if "SessionErrorQuota" not in sess:
     wg = wg.replace(case_anchor, case_new, 1)
     write("core/worker_group.go", wg)
     print("TURN quota classification applied")
+
+# 9. "All retransmissions failed" is transient, not fatal.
+sess = read("core/session.go")
+if "SessionErrorTransient" not in sess:
+    sess = sess.replace(
+        'SessionErrorQuota SessionErrorType = "TURN_QUOTA"',
+        'SessionErrorQuota SessionErrorType = "TURN_QUOTA"\n'
+        '\t// SessionErrorTransient — нет ответа после ретрансмиссий: повторить, не выходить.\n'
+        '\tSessionErrorTransient SessionErrorType = "TRANSIENT"',
+        1,
+    )
+    fatal_anchor = "\t\t// Остальные ошибки — фатальные"
+    transient = ('\t\t// Нет ответа после ретрансмиссий — транзиентная ошибка, не фатальная.\n'
+                 '\t\tif strings.Contains(errLower, "all retransmissions failed") {\n'
+                 '\t\t\treturn false, &SessionError{Type: SessionErrorTransient, Address: turnAddr, Err: fmt.Errorf("TURN Allocate: %w", err)}\n'
+                 '\t\t}\n\n') + fatal_anchor
+    if fatal_anchor not in sess:
+        raise RuntimeError("fatal marker not found in core/session.go")
+    sess = sess.replace(fatal_anchor, transient, 1)
+    write("core/session.go", sess)
+    print("Transient allocate failure classification applied")
