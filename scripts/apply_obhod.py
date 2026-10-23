@@ -295,3 +295,29 @@ if "DTLS timeout, пароль/WRAP не подтверждён" in session:
     )
     write("core/session.go", session)
     print("Neutral DTLS timeout wording applied")
+
+# 8. Separate TURN quota (486) from a dead address.
+sess = read("core/session.go")
+if "SessionErrorQuota" not in sess:
+    sess = sess.replace(
+        '\tSessionErrorAddressDead SessionErrorType = "ADDRESS_DEAD"',
+        '\tSessionErrorAddressDead SessionErrorType = "ADDRESS_DEAD"\n'
+        '\t// SessionErrorQuota — квота звонка/адреса исчерпана, адрес не «мёртв».\n'
+        '\tSessionErrorQuota SessionErrorType = "TURN_QUOTA"',
+        1,
+    )
+    old_quota = '\t\t// Квота, unreachable, timeout — всё это "адрес мёртв"\n\t\tif strings.Contains(errLower, "quota") ||\n\t\t\tstrings.Contains(errLower, "486") ||\n\t\t\tstrings.Contains(errLower, "unreachable") ||'
+    new_quota = '\t\t// 486 — квота звонка/адреса исчерпана, но адрес не «мёртв»: не баним.\n\t\tif strings.Contains(errLower, "quota") || strings.Contains(errLower, "486") {\n\t\t\treturn false, &SessionError{Type: SessionErrorQuota, Address: turnAddr, Err: fmt.Errorf("TURN Allocate: %w", err)}\n\t\t}\n\n\t\t// unreachable, timeout — адрес недоступен\n\t\tif strings.Contains(errLower, "unreachable") ||'
+    if old_quota not in sess:
+        raise RuntimeError("quota marker not found in core/session.go")
+    sess = sess.replace(old_quota, new_quota, 1)
+    write("core/session.go", sess)
+
+    wg = read("core/worker_group.go")
+    case_anchor = "\t\t\t\t\tcase SessionErrorAddressDead:"
+    case_new = "\t\t\t\t\tcase SessionErrorQuota:\n\t\t\t\t\t\t// Квота — не мёртвый адрес: не баним, короткая пауза и повтор.\n\t\t\t\t\t\tlog.Printf(\"[ВОРКЕР #%d] TURN-квота исчерпана на %s, адрес не баним\", wid, sessErr.Address)\n\t\t\t\t\t\ttime.Sleep(3 * time.Second)\n\n" + case_anchor
+    if case_anchor not in wg:
+        raise RuntimeError("worker_group case marker not found")
+    wg = wg.replace(case_anchor, case_new, 1)
+    write("core/worker_group.go", wg)
+    print("TURN quota classification applied")
