@@ -343,14 +343,541 @@ if "SessionErrorTransient" not in sess:
     write("core/session.go", sess)
     print("Transient allocate failure classification applied")
 
-# 10. DTLS timeout is transient: retry instead of rotating obfuscation.
+# 10. DTLS timeout is its own type: retry via default without rotating obfuscation.
 sess = read("core/session.go")
-if "SessionErrorTransient" in sess and "DTLS timeout" in sess:
-    sess = re.sub(
-        r'Type:\s+SessionErrorWrapTimeout,(\s*\n\s*Address:[^\n]*\n\s*Err:\s+fmt\.Errorf\("DTLS timeout)',
-        r'Type:    SessionErrorTransient,\1',
-        sess,
-        count=1,
+if "SessionErrorDtlsTimeout" not in sess:
+    sess = sess.replace(
+        '\tSessionErrorWrapTimeout SessionErrorType = "WRAP_TIMEOUT"',
+        '\tSessionErrorWrapTimeout SessionErrorType = "WRAP_TIMEOUT"\n'
+        '\t// DTLS_TIMEOUT — ретранслятор не ответил на DTLS; это не WRAP-проблема.\n'
+        '\t// В worker_group.go тип попадает в default: пауза и повтор без смены обфускации.\n'
+        '\tSessionErrorDtlsTimeout SessionErrorType = "DTLS_TIMEOUT"',
+        1,
     )
+    if 'SessionErrorDtlsTimeout SessionErrorType = "DTLS_TIMEOUT"' not in sess:
+        raise RuntimeError("DTLS timeout type marker not found in core/session.go")
     write("core/session.go", sess)
-    print("DTLS timeout classified as transient")
+
+sess = read("core/session.go")
+if "Type:    SessionErrorDtlsTimeout" not in sess:
+    old_dtls = (
+        '\t\t\treturn false, &SessionError{\n'
+        '\t\t\t\tType:    SessionErrorWrapTimeout,\n'
+        '\t\t\t\tAddress: turnAddr,\n'
+        '\t\t\t\tErr:     fmt.Errorf("DTLS timeout'
+    )
+    new_dtls = (
+        '\t\t\treturn false, &SessionError{\n'
+        '\t\t\t\tType:    SessionErrorDtlsTimeout,\n'
+        '\t\t\t\tAddress: turnAddr,\n'
+        '\t\t\t\tErr:     fmt.Errorf("DTLS timeout'
+    )
+    if old_dtls not in sess:
+        raise RuntimeError("DTLS timeout classification marker not found in core/session.go")
+    sess = sess.replace(old_dtls, new_dtls, 1)
+    write("core/session.go", sess)
+print("DTLS timeout classified separately")
+
+# 11. Use every TURN relay and publish TURN IPs from every group.
+wg = read("core/worker_group.go")
+
+old_fetch = '''\tvar credGen uint64
+
+\tfetchCreds := func() error {
+\t\tu, p, urls, err := GetCreds(ctx, hash, credStreamID)
+\t\tif err != nil {
+\t\t\treturn err
+\t\t}
+\t\tcredsMu.Lock()
+\t\tcurUser, curPass, curURLs = u, p, urls
+\t\tcredsMu.Unlock()
+\t\treturn nil
+\t}
+'''
+new_fetch = '''\tvar credGen uint64
+
+\t// publishTurnIPs reports every relay used by this group to the core collector.
+\t// The collector merges groups and refreshes WireGuard exclude routes, so a
+\t// credential refresh does not leave a new relay outside the tunnel split.
+\tpublishTurnIPs := func(urls []string) {
+\t\tif turnIPsCh == nil || len(urls) == 0 {
+\t\t\treturn
+\t\t}
+\t\tvar turnIPs []string
+\t\tfor _, url := range urls {
+\t\t\thost, _, err := net.SplitHostPort(url)
+\t\t\tif err != nil {
+\t\t\t\thost = url
+\t\t\t}
+\t\t\tif tp.Host != "" {
+\t\t\t\thost = tp.Host
+\t\t\t}
+\t\t\tresolved, err := net.LookupIP(host)
+\t\t\tif err != nil {
+\t\t\t\tturnIPs = append(turnIPs, host)
+\t\t\t} else {
+\t\t\t\tfor _, ip := range resolved {
+\t\t\t\t\tturnIPs = append(turnIPs, ip.String())
+\t\t\t\t}
+\t\t\t}
+\t\t}
+\t\tseen := make(map[string]bool)
+\t\tvar unique []string
+\t\tfor _, ip := range turnIPs {
+\t\t\tif ip != "" && !seen[ip] {
+\t\t\t\tseen[ip] = true
+\t\t\t\tunique = append(unique, ip)
+\t\t\t}
+\t\t}
+\t\tif len(unique) == 0 {
+\t\t\treturn
+\t\t}
+\t\tselect {
+\t\tcase turnIPsCh <- turnIPUpdate{GroupID: groupID, IPs: unique}:
+\t\tdefault:
+\t\t}
+\t}
+
+\tfetchCreds := func() error {
+\t\tu, p, urls, err := GetCreds(ctx, hash, credStreamID)
+\t\tif err != nil {
+\t\t\treturn err
+\t\t}
+\t\tcredsMu.Lock()
+\t\tcurUser, curPass, curURLs = u, p, urls
+\t\tcredsMu.Unlock()
+\t\treturn nil
+\t}
+'''
+if old_fetch not in wg:
+    raise RuntimeError("fetchCreds marker not found in core/worker_group.go")
+wg = wg.replace(old_fetch, new_fetch, 1)
+
+old_worker_sig = '\tturnIPsCh chan<- []string,'
+new_worker_sig = '\tturnIPsCh chan<- turnIPUpdate,'
+if old_worker_sig not in wg:
+    raise RuntimeError("WorkerGroup turnIPsCh signature marker not found")
+wg = wg.replace(old_worker_sig, new_worker_sig, 1)
+
+turn_update_type = '''type turnIPUpdate struct {
+\tGroupID int
+\tIPs     []string
+}
+
+'''
+if "type turnIPUpdate struct" not in wg:
+    wg = wg.replace("func WorkerGroup(", turn_update_type + "func WorkerGroup(", 1)
+
+old_initial = '''\tfor attempt := 1; ; attempt++ {
+\t\tif err := fetchCreds(); err == nil {
+\t\t\tbreak
+\t\t} else {
+'''
+new_initial = '''\tfor attempt := 1; ; attempt++ {
+\t\tif err := fetchCreds(); err == nil {
+\t\t\tcredsMu.RLock()
+\t\t\tinitialURLs := cloneStringSlice(curURLs)
+\t\t\tcredsMu.RUnlock()
+\t\t\tpublishTurnIPs(initialURLs)
+\t\t\tbreak
+\t\t} else {
+'''
+if old_initial not in wg:
+    raise RuntimeError("initial fetchCreds marker not found in core/worker_group.go")
+wg = wg.replace(old_initial, new_initial, 1)
+
+# The old block only published group 1 and only once; publishTurnIPs now does
+# this for every group on every credential refresh.
+wg, n = re.subn(
+    r'\tif groupID == 1 && turnIPsCh != nil \{.*?\n\t\}\n\n(?=\tvar configRequestInFlight)',
+    '\t// TURN IPs were published by every group above; main.go merges them.\n\n',
+    wg,
+    count=1,
+    flags=re.S,
+)
+if n != 1:
+    raise RuntimeError("group-1 TURN IP block marker not found in core/worker_group.go")
+wg = wg.replace('\t// Отправляем TURN IP для exclude routes (только первая группа)\n', '', 1)
+
+old_select = '\t\t\t\t// Берём первый доступный адрес\n\t\t\t\tturnAddr := available[0]'
+new_select = ('\t\t\t\t// Распределяем воркеров по всем доступным релеям. wid стабилен,\n'
+              '\t\t\t\t// поэтому соседние воркеры не сбиваются в очередь на первый адрес.\n'
+              '\t\t\t\tturnAddr := available[(wid-1)%len(available)]')
+if old_select not in wg:
+    raise RuntimeError("turnAddr selection marker not found in core/worker_group.go")
+wg = wg.replace(old_select, new_select, 1)
+
+old_auth = '''\t\t\t\t\tcase SessionErrorAuth:
+\t\t\t\t\t\t// Креды протухли (401) — обновляем и продолжаем.
+\t\t\t\t\t\t// Обновляет только один воркер: остальные увидят новый credGen
+\t\t\t\t\t\tlog.Printf("[ВОРКЕР #%d] Ошибка авторизации TURN, обновляю креды", wid)
+\t\t\t\t\t\tcredsMu.Lock()
+\t\t\t\t\t\tif credGen == gen {
+\t\t\t\t\t\t\tif err := fetchCreds(); err == nil {
+\t\t\t\t\t\t\t\tcredGen++
+\t\t\t\t\t\t\t\tlog.Printf("[ВОРКЕР #%d] Креды обновлены", wid)
+\t\t\t\t\t\t\t} else {
+\t\t\t\t\t\t\t\tlog.Printf("[ВОРКЕР #%d] Не удалось обновить креды: %v", wid, err)
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t\tcredsMu.Unlock()
+\t\t\t\t\t\tselect {
+'''
+new_auth = '''\t\t\t\t\tcase SessionErrorAuth:
+\t\t\t\t\t\t// Креды протухли (401) — обновляем и продолжаем.
+\t\t\t\t\t\t// Обновляет только один воркер: остальные увидят новый credGen.
+\t\t\t\t\t\tlog.Printf("[ВОРКЕР #%d] Ошибка авторизации TURN, обновляю креды", wid)
+\t\t\t\t\t\tcredsMu.Lock()
+\t\t\t\t\t\tneedRefresh := credGen == gen
+\t\t\t\t\t\tif needRefresh {
+\t\t\t\t\t\t\t// Заявляем поколение до сетевого запроса, иначе несколько
+\t\t\t\t\t\t\t// воркеров одновременно пойдут за новыми кредами.
+\t\t\t\t\t\t\tcredGen++
+\t\t\t\t\t\t}
+\t\t\t\t\t\tcredsMu.Unlock()
+\t\t\t\t\t\tif needRefresh {
+\t\t\t\t\t\t\tif err := fetchCreds(); err == nil {
+\t\t\t\t\t\t\t\tcredsMu.RLock()
+\t\t\t\t\t\t\t\trefreshedURLs := cloneStringSlice(curURLs)
+\t\t\t\t\t\t\t\tcredsMu.RUnlock()
+\t\t\t\t\t\t\t\tpublishTurnIPs(refreshedURLs)
+\t\t\t\t\t\t\t\tlog.Printf("[ВОРКЕР #%d] Креды обновлены", wid)
+\t\t\t\t\t\t\t} else {
+\t\t\t\t\t\t\t\tlog.Printf("[ВОРКЕР #%d] Не удалось обновить креды: %v", wid, err)
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t\tselect {
+'''
+if old_auth not in wg:
+    raise RuntimeError("SessionErrorAuth marker not found in core/worker_group.go")
+wg = wg.replace(old_auth, new_auth, 1)
+
+write("core/worker_group.go", wg)
+print("TURN relay distribution and refresh applied")
+
+# 12. Merge TURN addresses from every group and publish updates.
+main_go = read("core/main.go")
+old_turn_block = '''\tconfigCh := make(chan string, 1)
+\tturnIPsCh := make(chan []string, 1)
+\tgo func() {
+\t\tselect {
+\t\tcase rawConf, ok := <-configCh:
+\t\t\tif !ok || rawConf == "" {
+\t\t\t\treturn
+\t\t\t}
+\t\t\tfinalConf := patchMTU(rawConf)
+\t\t\tvar turnIPs []string
+\t\t\tselect {
+\t\t\tcase ips := <-turnIPsCh:
+\t\t\t\tturnIPs = ips
+\t\t\tdefault:
+\t\t\t}
+\t\t\tc.emit(Event{Type: EventEvent, Name: "wg_config", Data: finalConf, TurnIPs: turnIPs})
+\t\tcase <-ctx.Done():
+\t\t}
+\t}()
+'''
+new_turn_block = '''\tconfigCh := make(chan string, 1)
+\tturnIPsCh := make(chan turnIPUpdate, 64)
+\tvar turnIPsMu sync.Mutex
+\tvar turnIPsList []string
+\tturnIPsByGroup := make(map[int][]string)
+\tturnIPsSnapshot := func() []string {
+\t\tturnIPsMu.Lock()
+\t\tdefer turnIPsMu.Unlock()
+\t\treturn append([]string(nil), turnIPsList...)
+\t}
+\tgo func() {
+\t\tfor {
+\t\t\tselect {
+\t\t\tcase upd := <-turnIPsCh:
+\t\t\t\tturnIPsMu.Lock()
+\t\t\t\tturnIPsByGroup[upd.GroupID] = append([]string(nil), upd.IPs...)
+\t\t\t\tseen := make(map[string]struct{})
+\t\t\t\tnext := make([]string, 0, len(turnIPsList))
+\t\t\t\tfor _, ips := range turnIPsByGroup {
+\t\t\t\t\tfor _, ip := range ips {
+\t\t\t\t\t\tif ip == "" {
+\t\t\t\t\t\t\tcontinue
+\t\t\t\t\t\t}
+\t\t\t\t\t\tif _, ok := seen[ip]; ok {
+\t\t\t\t\t\t\tcontinue
+\t\t\t\t\t\t}
+\t\t\t\t\t\tseen[ip] = struct{}{}
+\t\t\t\t\t\tnext = append(next, ip)
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tchanged := len(next) != len(turnIPsList)
+\t\t\t\tif !changed {
+\t\t\t\t\toldSet := make(map[string]struct{}, len(turnIPsList))
+\t\t\t\t\tfor _, ip := range turnIPsList {
+\t\t\t\t\t\toldSet[ip] = struct{}{}
+\t\t\t\t\t}
+\t\t\t\t\tfor _, ip := range next {
+\t\t\t\t\t\tif _, ok := oldSet[ip]; !ok {
+\t\t\t\t\t\t\tchanged = true
+\t\t\t\t\t\t\tbreak
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tif changed {
+\t\t\t\t\tturnIPsList = next
+\t\t\t\t}
+\t\t\t\tsnapshot := append([]string(nil), turnIPsList...)
+\t\t\t\tturnIPsMu.Unlock()
+\t\t\t\tif changed {
+\t\t\t\t\tc.emit(Event{Type: EventEvent, Name: "turn_ips", TurnIPs: snapshot})
+\t\t\t\t}
+\t\t\tcase <-ctx.Done():
+\t\t\t\treturn
+\t\t\t}
+\t\t}
+\t}()
+\tgo func() {
+\t\tselect {
+\t\tcase rawConf, ok := <-configCh:
+\t\t\tif !ok || rawConf == "" {
+\t\t\t\treturn
+\t\t\t}
+\t\t\tfinalConf := patchMTU(rawConf)
+\t\t\tc.emit(Event{Type: EventEvent, Name: "wg_config", Data: finalConf, TurnIPs: turnIPsSnapshot()})
+\t\tcase <-ctx.Done():
+\t\t}
+\t}()
+'''
+if old_turn_block not in main_go:
+    raise RuntimeError("turnIPs channel marker not found in core/main.go")
+main_go = main_go.replace(old_turn_block, new_turn_block, 1)
+write("core/main.go", main_go)
+print("All-group TURN address collector applied")
+
+# 13. Bridge readiness and live TURN-route updates.
+bridge = read("backend/bridge.go")
+old_sig = "func (b *Bridge) forwardEvents(events <-chan core.Event, sessID uint64) {\n"
+new_sig = old_sig + '''\twgApplied := false
+\tcoreReady := false
+\tconnectedSent := false
+\tmarkConnected := func() {
+\t\tif connectedSent || !wgApplied || !coreReady {
+\t\t\treturn
+\t\t}
+\t\tconnectedSent = true
+\t\tb.onEvent("state_changed", "connected")
+\t}
+\twgLogf := func(msg string) {
+\t\tb.onEvent("log", "INFO", "[WG] "+msg)
+\t\tb.mu.Lock()
+\t\tif b.logFile != nil {
+\t\t\tb.logFile.Write("INFO", "[WG] "+msg)
+\t\t}
+\t\tb.mu.Unlock()
+\t}
+'''
+if old_sig not in bridge:
+    raise RuntimeError("forwardEvents marker not found in backend/bridge.go")
+bridge = bridge.replace(old_sig, new_sig, 1)
+
+new_switch = '''\t\t\tswitch ev.Name {
+\t\t\tcase "wg_config":
+\t\t\t\tb.onEvent("log", "INFO", "[WG] Применение конфига...")
+\t\t\t\tif err := wg.Apply(ev.Data, ev.TurnIPs, wgLogf); err != nil {
+\t\t\t\t\tb.onEvent("error", fmt.Sprintf("[WG] Ошибка: %v", err))
+\t\t\t\t} else {
+\t\t\t\t\twgApplied = true
+\t\t\t\t\tb.onEvent("log", "INFO", "[WG] Конфиг применён, ожидаем подтверждение WireGuard")
+\t\t\t\t\tmarkConnected()
+\t\t\t\t}
+\t\t\tcase "turn_ips":
+\t\t\t\twg.UpdateTurnRoutes(ev.TurnIPs, wgLogf)
+\t\t\tcase "captcha_required":
+\t\t\t\tb.onEvent("captcha_required", ev.Data)
+\t\t\tcase "ready":
+\t\t\t\tb.onEvent("log", "INFO", "[ЯДРО] Туннель готов к работе")
+\t\t\t\tcoreReady = true
+\t\t\t\tmarkConnected()
+\t\t\tdefault:
+\t\t\t\tb.onEvent("event", ev.Name)
+\t\t\t}'''
+bridge, n = re.subn(
+    r'\t\t\tswitch ev\.Name \{.*?\n\t\t\tdefault:\n\t\t\t\tb\.onEvent\("event", ev\.Name\)\n\t\t\t\}',
+    new_switch,
+    bridge,
+    count=1,
+    flags=re.S,
+)
+if n != 1:
+    raise RuntimeError("event switch marker not found in backend/bridge.go")
+write("backend/bridge.go", bridge)
+print("Readiness gated on WG apply and core ready")
+
+# 14. The frontend must not treat wg_config as readiness.
+app = read("frontend/src/App.tsx")
+old_event = '''      EventsOn('event', (name: unknown) => {
+        if (name === 'wg_config') tunnelStore.set('connected');
+      }),
+'''
+new_event = '''      // Readiness arrives as state_changed only after Bridge has applied
+      // WireGuard and the core has emitted ready. wg_config alone is not ready.
+'''
+if old_event not in app:
+    raise RuntimeError("frontend wg_config marker not found in App.tsx")
+app = app.replace(old_event, new_event, 1)
+write("frontend/src/App.tsx", app)
+print("Frontend readiness source fixed")
+
+# 15. Refresh only TURN exclude routes when the relay list changes.
+wg_go = read("backend/wg.go")
+old_field = '''\tactiveDevice        *device.Device
+\tactiveTun           tun.Device
+\tactiveExcludeRoutes []string
+'''
+new_field = '''\tactiveDevice        *device.Device
+\tactiveTun           tun.Device
+\tactiveExcludeRoutes []string
+\tactiveTurnRoutes    []string // TURN /32 routes that can change after a credential refresh
+'''
+if old_field not in wg_go:
+    raise RuntimeError("activeExcludeRoutes field marker not found in backend/wg.go")
+wg_go = wg_go.replace(old_field, new_field, 1)
+
+old_apply = '''\t// Exclude routes — VK IPs, DNS, etc go via physical gateway (bypass tunnel)
+\tvar excludes []string
+\tif gw != "" {
+\t\tfor _, ip := range turnIPs {
+\t\t\texcludes = append(excludes, ip+"/32")
+\t\t}
+\t\texcludes = append(excludes, vkExcludeCIDRs...)
+\t\tfor _, cidr := range excludes {
+\t\t\tip, mask, err := parseCIDR(cidr)
+\t\t\tif err != nil {
+\t\t\t\tcontinue
+\t\t\t}
+\t\t\t_ = runCmdWindows("route", "add", ip, "mask", mask, gw)
+\t\t}
+\t}
+\tw.activeExcludeRoutes = excludes
+'''
+new_apply = '''\t// Exclude routes — VK IPs, DNS, etc go via physical gateway (bypass tunnel)
+\tvar excludes []string
+\tvar turnRoutes []string
+\tif gw != "" {
+\t\tfor _, ip := range turnIPs {
+\t\t\tif ip == "" {
+\t\t\t\tcontinue
+\t\t\t}
+\t\t\tcidr := ip + "/32"
+\t\t\tturnRoutes = append(turnRoutes, cidr)
+\t\t\texcludes = append(excludes, cidr)
+\t\t}
+\t\texcludes = append(excludes, vkExcludeCIDRs...)
+\t\tfor _, cidr := range excludes {
+\t\t\tip, mask, err := parseCIDR(cidr)
+\t\t\tif err != nil {
+\t\t\t\tcontinue
+\t\t\t}
+\t\t\t_ = runCmdWindows("route", "add", ip, "mask", mask, gw)
+\t\t}
+\t}
+\tw.activeExcludeRoutes = excludes
+\tw.activeTurnRoutes = turnRoutes
+'''
+if old_apply not in wg_go:
+    raise RuntimeError("Windows exclude-route marker not found in backend/wg.go")
+wg_go = wg_go.replace(old_apply, new_apply, 1)
+
+old_clear = '''\tfor _, cidr := range w.activeExcludeRoutes {
+\t\tip, _, _ := parseCIDR(cidr)
+\t\tif ip != "" {
+\t\t\t_ = runCmdWindows("route", "delete", ip)
+\t\t}
+\t}
+\tw.activeExcludeRoutes = nil
+'''
+new_clear = '''\tfor _, cidr := range w.activeExcludeRoutes {
+\t\tip, _, _ := parseCIDR(cidr)
+\t\tif ip != "" {
+\t\t\t_ = runCmdWindows("route", "delete", ip)
+\t\t}
+\t}
+\tw.activeExcludeRoutes = nil
+\tw.activeTurnRoutes = nil
+'''
+if old_clear not in wg_go:
+    raise RuntimeError("Windows exclude-route teardown marker not found in backend/wg.go")
+wg_go = wg_go.replace(old_clear, new_clear, 1)
+
+update_method = '''
+// UpdateTurnRoutes refreshes only TURN /32 exclude routes after a credentials
+// refresh. It never reapplies WireGuard and never touches unrelated routes.
+func (w *WG) UpdateTurnRoutes(turnIPs []string, logf wgLogFunc) {
+\tif runtime.GOOS != "windows" {
+\t\treturn
+\t}
+\tif logf == nil {
+\t\tlogf = func(msg string) { log.Printf("[WG] %s", msg) }
+\t}
+\tw.stateMu.Lock()
+\tdefer w.stateMu.Unlock()
+\tif w.activeDevice == nil || w.physGW == "" {
+\t\treturn
+\t}
+\twanted := make(map[string]bool, len(turnIPs))
+\tfor _, ip := range turnIPs {
+\t\tif ip != "" {
+\t\t\twanted[ip+"/32"] = true
+\t\t}
+\t}
+\tif len(wanted) == 0 {
+\t\treturn
+\t}
+\told := make(map[string]bool, len(w.activeTurnRoutes))
+\tfor _, cidr := range w.activeTurnRoutes {
+\t\told[cidr] = true
+\t}
+\tfor cidr := range old {
+\t\tif wanted[cidr] {
+\t\t\tcontinue
+\t\t}
+\t\tip, _, err := parseCIDR(cidr)
+\t\tif err == nil && ip != "" {
+\t\t\t_ = runCmdWindows("route", "delete", ip)
+\t\t}
+\t}
+\tnextTurn := make([]string, 0, len(wanted))
+\tadded := 0
+\tfor cidr := range wanted {
+\t\tif old[cidr] {
+\t\t\tnextTurn = append(nextTurn, cidr)
+\t\t\tcontinue
+\t\t}
+\t\tip, mask, err := parseCIDR(cidr)
+\t\tif err != nil {
+\t\t\tcontinue
+\t\t}
+\t\tif err := runCmdWindows("route", "add", ip, "mask", mask, w.physGW); err != nil {
+\t\t\tlogf(fmt.Sprintf("TURN-маршрут %s не добавлен: %v", cidr, err))
+\t\t\tcontinue
+\t\t}
+\t\tnextTurn = append(nextTurn, cidr)
+\t\tadded++
+\t}
+\tbase := make([]string, 0, len(w.activeExcludeRoutes)+len(nextTurn))
+\tfor _, cidr := range w.activeExcludeRoutes {
+\t\tif !old[cidr] {
+\t\t\tbase = append(base, cidr)
+\t\t}
+\t}
+\tbase = append(base, nextTurn...)
+\tw.activeExcludeRoutes = base
+\tw.activeTurnRoutes = nextTurn
+\tif added > 0 {
+\t\tlogf(fmt.Sprintf("TURN-маршруты обновлены: +%d, всего %d", added, len(nextTurn)))
+\t}
+}
+'''
+anchor = "\n// CleanupStaleExcludeRoutes"
+if anchor not in wg_go:
+    raise RuntimeError("CleanupStaleExcludeRoutes anchor not found in backend/wg.go")
+wg_go = wg_go.replace(anchor, update_method + anchor, 1)
+write("backend/wg.go", wg_go)
+print("Live TURN exclude-route refresh applied")
