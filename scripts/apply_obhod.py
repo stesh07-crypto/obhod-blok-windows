@@ -274,3 +274,24 @@ func defaultRouteMetricWindows(gw string) string {
     wg = wg.replace(old_restore, new_restore, 1)
     write("backend/wg.go", wg)
     print("Windows metric restore patch applied")
+
+# 7. Honest connection status and neutral DTLS timeout wording.
+bridge = read("backend/bridge.go")
+if "[WG] Конфиг применён, туннель активен" in bridge:
+    bridge = bridge.replace(
+        '"[WG] Конфиг применён, туннель активен"',
+        '"[WG] Конфиг применён, ожидаем подтверждение WireGuard"',
+        1,
+    )
+    write("backend/bridge.go", bridge)
+    print("Honest config status applied")
+
+session = read("core/session.go")
+if "DTLS timeout, пароль/WRAP не подтверждён" in session:
+    session = session.replace(
+        '"DTLS timeout, пароль/WRAP не подтверждён"',
+        '"DTLS timeout: relay не ответил"',
+        1,
+    )
+    write("core/session.go", session)
+    print("Neutral DTLS timeout wording applied")
