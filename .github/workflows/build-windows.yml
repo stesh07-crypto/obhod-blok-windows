@@ -36,6 +36,7 @@ jobs:
           set -euo pipefail
           python3 scripts/apply_obhod.py upstream overlay
           python3 scripts/apply_full_settings.py upstream overlay
+          python3 scripts/apply_dns_fix.py upstream overlay
           grep -q 'Title:     "OBhoD"' upstream/main_windows.go
           grep -q 'func (a \*App) ImportSubscription' upstream/backend/app.go
           grep -q 'FetchSubscription' upstream/backend/subscription.go
@@ -62,6 +63,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+
+      - name: Test Windows DNS routing and rollback
+        working-directory: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -count=1 backend/tunnel_dns.go backend/tunnel_dns_test.go
+          go vet backend/tunnel_dns.go backend/tunnel_dns_test.go
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
